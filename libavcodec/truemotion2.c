@@ -377,6 +377,10 @@ static int tm2_read_stream(TM2Context *ctx, const uint8_t *buf, int stream_id, i
             }
         }
     } else {
+        if (len < 0) {
+            ret = AVERROR_INVALIDDATA;
+            goto end;
+        }
         for (i = 0; i < toks; i++) {
             ctx->tokens[stream_id][i] = codes.recode[0];
             if (stream_id <= TM2_MOT && ctx->tokens[stream_id][i] >= TM2_DELTAS) {
@@ -451,7 +455,7 @@ static inline int GET_TOK(TM2Context *ctx,int type)
 /* common operations - add deltas to 4x4 block of luma or 2x2 blocks of chroma */
 static inline void tm2_apply_deltas(TM2Context *ctx, int* Y, int stride, int *deltas, int *last)
 {
-    int ct, d;
+    unsigned ct, d;
     int i, j;
 
     for (j = 0; j < 4; j++){

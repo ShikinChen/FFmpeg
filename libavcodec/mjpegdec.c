@@ -594,6 +594,7 @@ int ff_mjpeg_decode_sof(MJpegDecodeContext *s)
         s->avctx->color_range = s->cs_itu601 ? AVCOL_RANGE_MPEG : AVCOL_RANGE_JPEG;
         break;
     case 0x22111100:
+    case 0x23111100:
     case 0x42111100:
     case 0x24111100:
         if (s->bits <= 8) s->avctx->pix_fmt = s->cs_itu601 ? AV_PIX_FMT_YUV420P : AV_PIX_FMT_YUVJ420P;
@@ -607,6 +608,10 @@ int ff_mjpeg_decode_sof(MJpegDecodeContext *s)
             if (s->bits > 8)
                 goto unk_pixfmt;
             s->upscale_v[1] = s->upscale_v[2] = 1;
+        } else if (pix_fmt_id == 0x23111100) {
+            if (s->bits > 8)
+                goto unk_pixfmt;
+            s->upscale_v[1] = s->upscale_v[2] = 2;
         }
         break;
     case 0x41111100:
@@ -624,6 +629,10 @@ unk_pixfmt:
     }
     if ((AV_RB32(s->upscale_h) || AV_RB32(s->upscale_v)) && s->avctx->lowres) {
         avpriv_report_missing_feature(s->avctx, "Lowres for weird subsampling");
+        return AVERROR_PATCHWELCOME;
+    }
+    if ((AV_RB32(s->upscale_h) || AV_RB32(s->upscale_v)) && s->progressive && s->avctx->pix_fmt == AV_PIX_FMT_GBRP) {
+        avpriv_report_missing_feature(s->avctx, "progressive for weird subsampling");
         return AVERROR_PATCHWELCOME;
     }
     if (s->ls) {
@@ -1055,6 +1064,11 @@ static int ljpeg_decode_rgb_scan(MJpegDecodeContext *s, int nb_components, int p
         for (mb_x = 0; mb_x < s->mb_width; mb_x++) {
             int modified_predictor = predictor;
 
+            if (get_bits_left(&s->gb) < 1) {
+                av_log(s->avctx, AV_LOG_ERROR, "bitstream end in rgb_scan\n");
+                return AVERROR_INVALIDDATA;
+            }
+
             if (s->restart_interval && !s->restart_count){
                 s->restart_count = s->restart_interval;
                 resync_mb_x = mb_x;
@@ -1078,7 +1092,7 @@ static int ljpeg_decode_rgb_scan(MJpegDecodeContext *s, int nb_components, int p
                     return -1;
 
                 left[i] = buffer[mb_x][i] =
-                    mask & (pred + (dc * (1 << point_transform)));
+                    mask & (pred + (unsigned)(dc * (1 << point_transform)));
             }
 
             if (s->restart_interval && !--s->restart_count) {
@@ -1591,9 +1605,7 @@ int ff_mjpeg_decode_sos(MJpegDecodeContext *s, const uint8_t *mb_bitmask,
         s->h_scount[i]  = s->h_count[index];
         s->v_scount[i]  = s->v_count[index];
 
-        if(nb_components == 3 && s->nb_components == 3 && s->avctx->pix_fmt == AV_PIX_FMT_GBR24P)
-            index = (i+2)%3;
-        if(nb_components == 1 && s->nb_components == 3 && s->avctx->pix_fmt == AV_PIX_FMT_GBR24P)
+        if((nb_components == 1 || nb_components == 3) && s->nb_components == 3 && s->avctx->pix_fmt == AV_PIX_FMT_GBR24P)
             index = (index+2)%3;
 
         s->comp_index[i] = index;
@@ -2521,7 +2533,7 @@ the_end:
                 w = AV_CEIL_RSHIFT(w, hshift);
                 h = AV_CEIL_RSHIFT(h, vshift);
             }
-            if (s->upscale_v[p])
+            if (s->upscale_v[p] == 1)
                 h = (h+1)>>1;
             av_assert0(w > 0);
             for (i = 0; i < h; i++) {
@@ -2585,9 +2597,9 @@ the_end:
             }
             dst = &((uint8_t *)s->picture_ptr->data[p])[(h - 1) * s->linesize[p]];
             for (i = h - 1; i; i--) {
-                uint8_t *src1 = &((uint8_t *)s->picture_ptr->data[p])[i / 2 * s->linesize[p]];
-                uint8_t *src2 = &((uint8_t *)s->picture_ptr->data[p])[(i + 1) / 2 * s->linesize[p]];
-                if (src1 == src2 || i == h - 1) {
+                uint8_t *src1 = &((uint8_t *)s->picture_ptr->data[p])[i * s->upscale_v[p] / (s->upscale_v[p] + 1) * s->linesize[p]];
+                uint8_t *src2 = &((uint8_t *)s->picture_ptr->data[p])[(i + 1) * s->upscale_v[p] / (s->upscale_v[p] + 1) * s->linesize[p]];
+                if (s->upscale_v[p] != 2 && (src1 == src2 || i == h - 1)) {
                     memcpy(dst, src1, w);
                 } else {
                     for (index = 0; index < w; index++)
